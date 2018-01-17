@@ -21,6 +21,7 @@ import os, sys
 import shutil
 import fileinput
 import time
+import subprocess
 
 '''
 Example of Metadata information
@@ -59,7 +60,7 @@ Example of Metadata information
   ]
 }
 '''
-CONFIG_DRIVE = True
+CONFIG_DRIVE = False
 
 def get_metadata_zeroconf():
     '''Function that sends a GET to the metadata service and parses the output'''
@@ -89,7 +90,30 @@ def get_metadata_config_drive():
     except Exception as e:
         return "ERROR - Config drive mount failed: {}".format(e)
 
-def write_udev(metadata):
+def get_metadata_lspci():
+
+    try:
+        p1 = subprocess.Popen("lspci | grep Ethernet", stdout=subprocess.PIPE, shell=True)
+        lspci_byte = p1.stdout.read()
+        lspci_list = lspci_byte.decode('utf-8').splitlines()
+        nic_list = []
+        for nic in lspci_list:
+           nic_list.append(nic.split(' ')[0])
+        nic_list.sort()
+
+        metadata = get_metadata_zeroconf()
+        lspci_metadata = {}
+        i = 0
+        for nic in nic_list:
+            if metadata.get(nic) == None:
+                lspci_metadata["xe{}".format(i)] = nic
+                i += 1
+        return lspci_metadata
+    except Exception as e:
+        return "ERROR - LSPCI metadata failed: {}".format(e)
+
+
+def write_udev(metadata, mode='w'):
     '''Function that will write udev rules that look like:
     cat /etc/udev/rules.d/70-persistent-net.rules
     ACTION=="add", SUBSYSTEM=="net", KERNELS=="0000:00:0a.0", NAME="eth0"
@@ -97,7 +121,7 @@ def write_udev(metadata):
     ACTION=="add", SUBSYSTEM=="net", KERNELS=="0000:00:0c.0", NAME="xe0"
     ACTION=="add", SUBSYSTEM=="net", KERNELS=="0000:00:0d.0", NAME="xe1" '''
     try:
-        target = open('/etc/udev/rules.d/70-persistent-net.rules', 'w')
+        target = open('/etc/udev/rules.d/70-persistent-net.rules', mode)
         for i in metadata:
             target.write('ACTION=="add", SUBSYSTEM=="net", KERNELS=="'+ metadata[i] + '", NAME="' + i + '"')
             target.write("\n")
@@ -105,22 +129,45 @@ def write_udev(metadata):
     except Exception as e:
         return "ERROR - Writing udev config file failed: {}".format(e)
 
-def apply_udev(metadata):
+def apply_udev(metadata, mode="w"):
     try:
-        if not CONFIG_DRIVE:
-            os.system("systemctl stop network.service")
-        os.system("udevadm control --reload")
-        os.system("udevadm trigger --attr-match=subsystem=net")
-        os.system("systemctl restart systemd-udev-trigger.service")
-        for name,pci in metadata.iteritems():
-            shutil.copy("/etc/sysconfig/network-scripts/ifcfg-eth0", "/etc/sysconfig/network-scripts/ifcfg-"+ name)
-            for line in fileinput.input("/etc/sysconfig/network-scripts/ifcfg-"+ name, inplace=1):
-                if "eth0" in line:
-                    line = line.replace("eth0", name)
-                sys.stdout.write(line)
-        os.remove("/etc/sysconfig/network-scripts/ifcfg-eth0")
-        if not CONFIG_DRIVE:
-            os.system("systemctl start network.service")
+        if os.path.isfile('/etc/redhat-release'):
+            if not CONFIG_DRIVE:
+                os.system("systemctl stop network.service")
+            os.system("udevadm control --reload")
+            os.system("udevadm trigger --attr-match=subsystem=net")
+            os.system("systemctl restart systemd-udev-trigger.service")
+            for name,pci in metadata.iteritems():
+                shutil.copy("/etc/sysconfig/network-scripts/ifcfg-eth0", "/etc/sysconfig/network-scripts/ifcfg-"+ name)
+                for line in fileinput.input("/etc/sysconfig/network-scripts/ifcfg-"+ name, inplace=1):
+                    if "eth0" in line:
+                        line = line.replace("eth0", name)
+                    sys.stdout.write(line)
+            os.remove("/etc/sysconfig/network-scripts/ifcfg-eth0")
+            if not CONFIG_DRIVE:
+                os.system("systemctl start network.service")
+        else:
+            os.system("systemctl stop networking.service")
+            os.system("udevadm control --reload")
+            os.system("udevadm trigger --attr-match=subsystem=net")
+            os.system("systemctl restart systemd-udev-trigger.service")
+            shutil.copy("/etc/network/interfaces", "/etc/network/interfaces.bckup")
+            for name,pci in metadata.iteritems():
+                target = open('/etc/network/interfaces', mode)
+                if mode == "w":
+                    target.write("auto lo")
+                    target.write("\n")
+                    target.write("iface lo inet loopback")
+                    target.write("\n")
+                    target.write("\n")
+                for i in metadata:
+                    if "eth0" in i:
+                        target.write("auto {}".format(i))
+                        target.write("\n")
+                        target.write("iface {} inet dhcp".format(i))
+                        target.write("\n")
+                        target.write("\n")
+            os.system("systemctl start networking.service")
     except Exception as e:
         return "ERROR - Apply udev failed: {}".format(e)
 
