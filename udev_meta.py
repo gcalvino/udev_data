@@ -178,7 +178,7 @@ def main():
         write_udev(a)
         apply_udev(a)
     if not CONFIG_DRIVE:
-        time.sleep(1)
+        time.sleep(3)
         a = get_metadata_zeroconf()
         write_udev(a)
         apply_udev(a)
